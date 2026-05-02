@@ -23,7 +23,7 @@
       ESC      — вернуться в меню
       Пробел   — альтернатива Enter для выполнения команды
 """
-import pygame, sys, time, threading, os, random, math, requests, json
+import pygame, sys, time, threading, os, random, math, requests, json, pickle
 from dataclasses import dataclass, field
 from typing import Optional, Callable, Dict, List, Tuple
 from enum import Enum, auto
@@ -527,45 +527,45 @@ def make_missions() -> Dict[str, Mission]:
 SKILLS_DATA: List[Skill] = [
     # GHOST branch — скрытность
     Skill("ghost_1","Ghost Step","GHOST","👣",
-        "Базовый уровень: −15% к обнаружению при всех атаках",1,(0.5,0.15),
+        "Базовый уровень: −15% к обнаружению при всех атаках",1,(0.5,0.12),
         stealth_bonus=0.15),
     Skill("ghost_2","Phantom OS","GHOST","🌫",
-        "Работа через Whonix: −25% обнаружение (требует Ghost Step)",2,(0.3,0.40),
+        "Работа через Whonix: −25% обнаружение (требует Ghost Step)",2,(0.5,0.32),
         ["ghost_1"], stealth_bonus=0.25),
     Skill("ghost_3","Log Wiper","GHOST","🧹",
-        "cover очищает логи на 2 соседних узла одновременно",2,(0.7,0.40),
-        ["ghost_1"], special="multi_cover"),
+        "cover очищает логи на 2 соседних узла одновременно",2,(0.5,0.52),
+        ["ghost_2"], special="multi_cover"),
     Skill("ghost_4","Dark Matter","GHOST","🕳",
-        "Один раз за миссию: полное исчезновение (DEFCON→4→2)",3,(0.5,0.65),
-        ["ghost_2","ghost_3"], special="escape_once"),
+        "Один раз за миссию: полное исчезновение (DEFCON→4→2)",3,(0.5,0.72),
+        ["ghost_3"], special="escape_once"),
 
     # ZERO branch — эксплуатация
     Skill("zero_1","Stack Smasher","ZERO","💣",
-        "+20% к шансу успешного exploit на всех узлах",1,(0.5,0.15),
+        "+20% к шансу успешного exploit на всех узлах",1,(0.5,0.12),
         hack_bonus=0.20),
     Skill("zero_2","Zero Day Pack","ZERO","📦",
-        "Открывает 2 дополнительных 0-day (super_exploit)",2,(0.3,0.40),
+        "Открывает 2 дополнительных 0-day (super_exploit)",2,(0.5,0.32),
         ["zero_1"], special="zero_day"),
     Skill("zero_3","Kernel Mode","ZERO","⚙",
-        "После успешного exploit: автоматическая эскалация до root",2,(0.7,0.40),
-        ["zero_1"], special="auto_root"),
+        "После успешного exploit: автоматическая эскалация до root",2,(0.5,0.52),
+        ["zero_2"], special="auto_root"),
     Skill("zero_4","God Mode","ZERO","👁",
-        "Финальный навык: один узел уничтожается с DEFCON-сбросом к 0",3,(0.5,0.65),
-        ["zero_2","zero_3"], special="god_mode"),
+        "Финальный навык: один узел уничтожается с DEFCON-сбросом к 0",3,(0.5,0.72),
+        ["zero_3"], special="god_mode"),
 
     # ORACLE branch — социальная инженерия / ИИ
     Skill("oracle_1","Open Source Int","ORACLE","🔍",
-        "scan показывает файлы и тип ОС до компрометации",1,(0.5,0.15),
+        "scan показывает файлы и тип ОС до компрометации",1,(0.5,0.12),
         social_bonus=0.10),
     Skill("oracle_2","Deep Fake Voice","ORACLE","🎭",
-        "+30% к успеху social-атак и фишинга",2,(0.3,0.40),
+        "+30% к успеху social-атак и фишинга",2,(0.5,0.32),
         ["oracle_1"], social_bonus=0.30),
     Skill("oracle_3","Psych Profile","ORACLE","🧠",
-        "oracle команда даёт детальный план следующих 3 шагов",2,(0.7,0.40),
-        ["oracle_1"], special="deep_hint"),
+        "oracle команда даёт детальный план следующих 3 шагов",2,(0.5,0.52),
+        ["oracle_2"], special="deep_hint"),
     Skill("oracle_4","Puppet Master","ORACLE","🪡",
-        "social-атака может полностью отключить SENTINEL на 120 сек",3,(0.5,0.65),
-        ["oracle_2","oracle_3"], special="silence_sentinel"),
+        "social-атака может полностью отключить SENTINEL на 120 сек",3,(0.5,0.72),
+        ["oracle_3"], special="silence_sentinel"),
 ]
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -687,6 +687,41 @@ class GameManager(metaclass=_SM):
                 s.social_bonus,s.special,s.unlocked))
         self.escape_used = False
         self.god_used    = False
+
+    def save_game(self, filename="savegame.dat"):
+        """Сохранение прогресса в файл"""
+        data = {
+            "credits": self.credits,
+            "skill_pts": self.skill_pts,
+            "completed_m": self.completed_m,
+            "skills": [(s.sid, s.unlocked) for s in self.skills],
+        }
+        try:
+            with open(filename, "wb") as f:
+                pickle.dump(data, f)
+            return True, "Игра сохранена"
+        except Exception as e:
+            return False, f"Ошибка сохранения: {e}"
+    
+    def load_game(self, filename="savegame.dat"):
+        """Загрузка прогресса из файла"""
+        try:
+            with open(filename, "rb") as f:
+                data = pickle.load(f)
+            self.credits = data.get("credits", 0)
+            self.skill_pts = data.get("skill_pts", 2)
+            self.completed_m = data.get("completed_m", [])
+            # Восстанавливаем навыки
+            saved_skills = {sid: unlocked for sid, unlocked in data.get("skills", [])}
+            for s in self.skills:
+                if s.sid in saved_skills:
+                    s.unlocked = saved_skills[s.sid]
+            return True, "Игра загружена"
+        except FileNotFoundError:
+            return False, "Нет сохранённых игр"
+        except Exception as e:
+            return False, f"Ошибка загрузки: {e}"
+
 
     def set_phase(self, p: Phase):
         self.phase = p
@@ -1572,9 +1607,28 @@ class MissionSelectScreen:
         self.skill_btn = _Button(SW-200, SH-60, 180, 44, "🎓 НАВЫКИ ("+str(self.gm.skill_pts)+" SP)",
                                   C_PURPLE, (200,80,255), C_WHITE, 14)
         self.skill_btn.on_click(lambda: self.gm.set_phase(Phase.SKILLS))
+        
+        # Кнопки сохранения/загрузки
+        self.btn_save = _Button(SW//2 - 220, SH - 140, 200, 40, "💾 СОХРАНИТЬ", C_DKGRAY, C_GREEN, C_WHITE, 12)
+        self.btn_save.on_click(lambda: self._do_save())
+        self.btn_load = _Button(SW//2 + 20, SH - 140, 200, 40, "📂 ЗАГРУЗИТЬ", C_DKGRAY, C_BLUE, C_WHITE, 12)
+        self.btn_load.on_click(lambda: self._do_load())
+        self.save_msg = ""
+        self.save_msg_t = 0.0
+        
         self.rain    = [(random.randint(0,SW), random.randint(0,SH),
                          chr(random.randint(0x30A0,0x30FF)), random.randint(10,50)) for _ in range(100)]
         self.t       = 0.0
+
+    def _do_save(self):
+        ok, msg = self.gm.save_game()
+        self.save_msg = msg
+        self.save_msg_t = 3.0
+    
+    def _do_load(self):
+        ok, msg = self.gm.load_game()
+        self.save_msg = msg
+        self.save_msg_t = 3.0
 
     def handle(self, event):
         self.skill_btn.handle(event)
@@ -1677,6 +1731,16 @@ class MissionSelectScreen:
                 txt(self.surf, "✓ ПРОЙДЕНО", fnt("consolas",13,True), C_GREEN, rx+145, 608)
 
         txt(self.surf, "▸ Миссии открываются последовательно", fnt("consolas",11), C_GRAY, 60, 660)
+        
+        # Кнопки сохранения/загрузки
+        self.btn_save.draw(self.surf)
+        self.btn_load.draw(self.surf)
+        
+        # Сообщение о сохранении/загрузке
+        if self.save_msg and self.save_msg_t > 0:
+            panel(self.surf, (SW//2-200, 70, 400, 34), (10,40,10), C_GREEN, r=4)
+            txt(self.surf, self.save_msg, fnt("consolas",12), C_GREEN, SW//2, 87, center=True)
+        
         self.skill_btn.text = f"🎓 НАВЫКИ  ({self.gm.skill_pts} SP)"
         self.skill_btn.draw(self.surf)
         self.surf.blit(get_crt(), (0,0))
