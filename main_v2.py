@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  GHOST PROTOCOL: CYBER OPS  v2.0                                            ║
+║  GHOST PROTOCOL: CYBER OPS  v3.0                                            ║
 ║  Продвинутый тренажёр по кибербезопасности с мультиагентным ИИ             ║
 ║  Гелич К.А.  |  КЕМ-25-01  |  РГУ нефти и газа (НИУ) им. И.М. Губкина     ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -21,6 +21,7 @@
       ↑  ↓     — история команд
       Tab      — автодополнение
       ESC      — вернуться в меню
+      Пробел   — альтернатива Enter для выполнения команды
 """
 import pygame, sys, time, threading, os, random, math, requests, json
 from dataclasses import dataclass, field
@@ -1480,7 +1481,8 @@ class BootScreen:
         self.f_big   = fnt("consolas", 32, True)
 
     def handle(self, event):
-        if event.type == pygame.KEYDOWN and (event.key in (pygame.K_RETURN, pygame.K_SPACE)):
+        # Поддержка обоих типов Enter и пробела для пропуска заставки
+        if event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
             self.done = True
 
     def update(self, dt):
@@ -1693,11 +1695,22 @@ class _Button:
         self.bold     = bold
         self._hovered = False
         self._cb      = None
+        self._pressed = False  # Для обработки Enter/Space на кнопках
+    
     def on_click(self, cb): self._cb = cb; return self
+    
     def handle(self, ev):
-        if ev.type == pygame.MOUSEMOTION: self._hovered = self.rect.collidepoint(ev.pos)
+        if ev.type == pygame.MOUSEMOTION: 
+            self._hovered = self.rect.collidepoint(ev.pos)
         if ev.type == pygame.MOUSEBUTTONDOWN and ev.button==1:
-            if self.rect.collidepoint(ev.pos) and self._cb: self._cb()
+            if self.rect.collidepoint(ev.pos) and self._cb: 
+                self._cb()
+        # Поддержка Enter и Space для активации кнопки при наведении
+        if ev.type == pygame.KEYDOWN and self._hovered:
+            if ev.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                if self._cb:
+                    self._cb()
+    
     def draw(self, surf):
         c = self.hover if self._hovered else self.normal
         pygame.draw.rect(surf, c, self.rect, border_radius=5)
@@ -1724,10 +1737,10 @@ class GamePlayScreen:
 
         # Terminal setup
         self.term_scroll   = 0
-        self.TERM_LINES    = (SH - 80) // 17  # видимых строк
-        self.f_term        = fnt("consolas", 13, False)
-        self.f_sm          = fnt("consolas", 12, False)
-        self.f_md          = fnt("consolas", 15, True)
+        self.TERM_LINES    = (SH - 90) // 18  # видимых строк — оптимизировано для читаемости
+        self.f_term        = fnt("consolas", 14, False)  # увеличенный шрифт для лучшей читаемости
+        self.f_sm          = fnt("consolas", 13, False)  # увеличенный для читаемости
+        self.f_md          = fnt("consolas", 16, True)
         self.f_hdr         = fnt("consolas", 18, True)
 
         # Node radii for click detection
@@ -1849,32 +1862,51 @@ class GamePlayScreen:
             if TERM_R.collidepoint(mx, my):
                 self.term_scroll = max(0, self.term_scroll - event.y * 2)
 
-        # Ввод в терминал
+        # Ввод в терминал — корректная обработка всех клавиш
         if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_RETURN:
+            # Enter (оба варианта) — выполнение команды
+            if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                 cmd = self.tm.input.strip()
                 self.tm.input = ""
-                if cmd: self.tm.process(cmd)
+                if cmd: 
+                    self.tm.process(cmd)
                 self.term_scroll = 0
+            # Пробел — только если есть текст для отправки (не просто пробел)
+            elif event.key == pygame.K_SPACE and self.tm.input.strip():
+                cmd = self.tm.input.strip()
+                self.tm.input = ""
+                self.tm.process(cmd)
+                self.term_scroll = 0
+            # Backspace — удаление символа
             elif event.key == pygame.K_BACKSPACE:
                 self.tm.input = self.tm.input[:-1]
+            # Стрелка вверх — предыдущая команда в истории
             elif event.key == pygame.K_UP:
                 if self.tm.history:
                     self.tm.hist_i = min(self.tm.hist_i+1, len(self.tm.history)-1)
                     self.tm.input  = self.tm.history[self.tm.hist_i]
+            # Стрелка вниз — следующая команда в истории
             elif event.key == pygame.K_DOWN:
                 if self.tm.hist_i > 0:
                     self.tm.hist_i -= 1
                     self.tm.input  = self.tm.history[self.tm.hist_i]
                 else:
-                    self.tm.hist_i = -1; self.tm.input = ""
+                    self.tm.hist_i = -1
+                    self.tm.input = ""
+            # Tab — автодополнение
             elif event.key == pygame.K_TAB:
                 self.tm.autocomplete()
+            # Escape — выход в меню
             elif event.key == pygame.K_ESCAPE:
                 self.gm.set_phase(Phase.MENU)
-            elif len(self.tm.input) < 120 and event.unicode.isprintable():
-                self.tm.input += event.unicode
+        
+        # Обработка ввода текста (кириллица, символы, пробел в начале строки)
+        # TEXTINPUT срабатывает отдельно от KEYDOWN и корректно обрабатывает все символы
+        if event.type == pygame.TEXTINPUT:
+            if len(self.tm.input) < 120:
+                self.tm.input += event.text
 
+        # Дублирующая обработка ESCAPE на случай если TEXTINPUT перехватил фокус
         if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             self.gm.set_phase(Phase.MENU)
 
@@ -1987,10 +2019,10 @@ class GamePlayScreen:
                 iy = NET_R.height - 210
                 panel(self.surf, (NET_R.x+4, iy, NET_R.width-8, 200), C_PANEL2, C_BORDH, r=4)
                 scol = NTCOLOR.get(nd.state.value, C_GRAY)
-                txt(self.surf, nd.label, fnt("consolas",13,True), scol, NET_R.x+10, iy+6)
-                txt(self.surf, nd.ip, fnt("consolas",11), C_GRAY, NET_R.x+10, iy+24)
-                txt(self.surf, f"ОС: {nd.os_info[:28]}", fnt("consolas",11), C_GRAY, NET_R.x+10, iy+40)
-                txt(self.surf, f"Статус: {nd.state.value.upper()}", fnt("consolas",11), scol, NET_R.x+10, iy+56)
+                txt(self.surf, nd.label, fnt("consolas",14,True), scol, NET_R.x+12, iy+8)
+                txt(self.surf, nd.ip, fnt("consolas",12), C_GRAY, NET_R.x+12, iy+28)
+                txt(self.surf, f"ОС: {nd.os_info[:28]}", fnt("consolas",12), C_GRAY, NET_R.x+12, iy+46)
+                txt(self.surf, f"Статус: {nd.state.value.upper()}", fnt("consolas",12), scol, NET_R.x+12, iy+64)
                 if nd.is_objective:
                     txt(self.surf, "★ ЦЕЛЬ ОПЕРАЦИИ", fnt("consolas",11,True), C_PURPLE, NET_R.x+10, iy+72)
                 if nd.is_honeypot and nd.state in (NodeSt.SCANNED, NodeSt.OWNED):
@@ -2026,23 +2058,23 @@ class GamePlayScreen:
         n_vis  = self.TERM_LINES
         start  = max(0, len(visible_lines) - n_vis - self.term_scroll)
         end    = max(0, len(visible_lines) - self.term_scroll)
-        y0     = 44
+        y0     = 48
         for i, (line, col) in enumerate(visible_lines[start:end]):
-            txt(self.surf, line[:86], self.f_term, col, TERM_R.x+10, y0 + i*17)
+            txt(self.surf, line[:82], self.f_term, col, TERM_R.x+12, y0 + i*19)
 
         # Input line
-        pygame.draw.rect(self.surf, (6,12,24), (TERM_R.x, SH-46, TERM_R.width, 46))
-        pygame.draw.line(self.surf, C_BORDER, (TERM_R.x, SH-46), (TERM_R.x+TERM_R.width, SH-46), 1)
+        pygame.draw.rect(self.surf, (6,12,24), (TERM_R.x, SH-52, TERM_R.width, 52))
+        pygame.draw.line(self.surf, C_BORDER, (TERM_R.x, SH-52), (TERM_R.x+TERM_R.width, SH-52), 2)
         if self.end_btn:
             self.end_btn.draw(self.surf)
         else:
-            prompt_w = txt(self.surf, self.tm.prompt(), self.f_term, C_DKGREEN, TERM_R.x+10, SH-30)
-            blink = "_" if int(self.t*2.5)%2 else " "
-            txt(self.surf, self.tm.input + blink, self.f_term, C_GREEN, TERM_R.x+10+prompt_w+2, SH-30)
+            prompt_w = txt(self.surf, self.tm.prompt(), self.f_term, C_DKGREEN, TERM_R.x+12, SH-34)
+            blink = "█" if int(self.t*2.5)%2 else " "
+            txt(self.surf, self.tm.input + blink, self.f_term, C_GREEN, TERM_R.x+12+prompt_w+4, SH-34)
 
         # Scroll indicator
         if self.term_scroll > 0:
-            txt(self.surf, f"↑ {self.term_scroll} строк выше", fnt("consolas",10), C_GRAY, TERM_R.right-150, SH-48)
+            txt(self.surf, f"↑ {self.term_scroll} строк выше", fnt("consolas",11), C_GRAY, TERM_R.right-160, SH-54)
 
     # ── HUD ──────────────────────────────────────────────────────────────
     def _draw_hud_panel(self):
@@ -2375,8 +2407,10 @@ def build_screen(phase: Phase, surf):
 # ════════════════════════════════════════════════════════════════════════════
 def main():
     pygame.init()
+    # Включаем поддержку повтора клавиш для плавного ввода и TEXTINPUT
+    pygame.key.set_repeat(200, 25)
     surf  = pygame.display.set_mode((SW, SH))
-    pygame.display.set_caption("GHOST PROTOCOL: CYBER OPS  v2.0  |  Гелич К.А.  |  КЕМ-25-01")
+    pygame.display.set_caption("GHOST PROTOCOL: CYBER OPS  v3.0  |  Гелич К.А.  |  КЕМ-25-01")
     clock = pygame.time.Clock()
 
     gm          = GameManager()
