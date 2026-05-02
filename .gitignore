@@ -1,3 +1,8 @@
-# Examples 1:
+```
+# Compiled Python files
+*.pyc
+__pycache__/
 
-# Example 2 (Project with artifacts):
+# Environment files
+.env
+```
