@@ -385,7 +385,7 @@ def make_missions() -> Dict[str, Mission]:
 
     # ── МИССИЯ 3: ZERO HOUR ──────────────────────────────────────────────
     m3_nodes = {
-        "inet": NetNode("inet","INTERNET","0.0.0.0","Open","(0.5,0.05)",
+        "inet": NetNode("inet","INTERNET","0.0.0.0","Open",
             (0.5, 0.05), ["proxy"],[], {}, NodeSt.ACCESSIBLE, is_entry=True),
 
         "proxy": NetNode("proxy","REVERSE-PROXY","195.18.45.1","HAProxy 2.6",
@@ -592,11 +592,11 @@ class _SM(type):
         return cls._i[cls]
 
 # ════════════════════════════════════════════════════════════════════════════
-#  AI MANAGER — поддержка Claude / Qwen / OpenAI
+#  AI MANAGER — поддержка Claude / Qwen / OpenAI / OpenRouter
 # ════════════════════════════════════════════════════════════════════════════
 class AIManager(metaclass=_SM):
     def __init__(self):
-        self.provider = os.getenv("AI_PROVIDER","openai").lower()
+        self.provider = os.getenv("AI_PROVIDER","openrouter").lower()
         self.key_cl   = os.getenv("ANTHROPIC_API_KEY","")
         self.key_qw   = os.getenv("DASHSCOPE_API_KEY","")
         self.key_oa   = os.getenv("OPENAI_API_KEY","")
@@ -616,31 +616,37 @@ class AIManager(metaclass=_SM):
 
     @property
     def available(self):
-        if self.provider == "claude":  return bool(self.key_cl)
-        if self.provider == "qwen":    return bool(self.key_qw)
+        if self.provider == "claude":   return bool(self.key_cl)
+        if self.provider == "qwen":     return bool(self.key_qw)
+        if self.provider == "openrouter": return bool(self.key_oa)
         return bool(self.key_oa)
 
     def _send(self, system, history, prompt, callback, max_tokens=180):
-        messages = history + [{"role":"user","content":prompt}]
+        messages = [{"role":"system","content":system}] + history + [{"role":"user","content":prompt}]
         try:
             if self.provider == "claude":
                 r = requests.post("https://api.anthropic.com/v1/messages",
                     headers={"x-api-key":self.key_cl,"anthropic-version":"2023-06-01","content-type":"application/json"},
-                    json={"model":"claude-opus-4-5","max_tokens":max_tokens,"system":system,"messages":messages},
+                    json={"model":"claude-opus-4-5","max_tokens":max_tokens,"messages":history},
                     timeout=15)
                 text = r.json()["content"][0]["text"]
             elif self.provider == "qwen":
                 r = requests.post("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
                     headers={"Authorization":f"Bearer {self.key_qw}","Content-Type":"application/json"},
-                    json={"model":"qwen-plus","max_tokens":max_tokens,
-                          "messages":[{"role":"system","content":system}]+messages},
+                    json={"model":"qwen-plus","max_tokens":max_tokens,"messages":messages},
+                    timeout=15)
+                text = r.json()["choices"][0]["message"]["content"]
+            elif self.provider == "openrouter":
+                r = requests.post("https://openrouter.ai/api/v1/chat/completions",
+                    headers={"Authorization":f"Bearer {self.key_oa}","Content-Type":"application/json",
+                             "HTTP-Referer":"https://github.com/ghost-protocol-cyberops","X-Title":"Ghost Protocol CyberOps"},
+                    json={"model":"meta-llama/llama-3-8b-instruct:free","max_tokens":max_tokens,"messages":messages},
                     timeout=15)
                 text = r.json()["choices"][0]["message"]["content"]
             else:   # openai
                 r = requests.post("https://api.openai.com/v1/chat/completions",
                     headers={"Authorization":f"Bearer {self.key_oa}","Content-Type":"application/json"},
-                    json={"model":"gpt-4o-mini","max_tokens":max_tokens,
-                          "messages":[{"role":"system","content":system}]+messages},
+                    json={"model":"gpt-4o-mini","max_tokens":max_tokens,"messages":messages},
                     timeout=15)
                 text = r.json()["choices"][0]["message"]["content"]
             history.append({"role":"user","content":prompt})
@@ -666,6 +672,8 @@ class AIManager(metaclass=_SM):
 #  GAME MANAGER
 # ════════════════════════════════════════════════════════════════════════════
 class GameManager(metaclass=_SM):
+    SAVE_FILE = "savegame.json"
+    
     def __init__(self):
         self.phase       = Phase.BOOT
         self.running     = True
@@ -686,6 +694,38 @@ class GameManager(metaclass=_SM):
                 s.social_bonus,s.special,s.unlocked))
         self.escape_used = False
         self.god_used    = False
+        self.load_game()
+
+    def save_game(self):
+        """Сохранение прогресса в JSON файл"""
+        try:
+            data = {
+                "credits": self.credits,
+                "skill_pts": self.skill_pts,
+                "completed_m": self.completed_m,
+                "skills_unlocked": [s.sid for s in self.skills if s.unlocked],
+            }
+            with open(self.SAVE_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"[Save Error] {e}")
+
+    def load_game(self):
+        """Загрузка прогресса из JSON файла"""
+        if not os.path.exists(self.SAVE_FILE):
+            return
+        try:
+            with open(self.SAVE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.credits = data.get("credits", 0)
+            self.skill_pts = data.get("skill_pts", 2)
+            self.completed_m = data.get("completed_m", [])
+            unlocked = set(data.get("skills_unlocked", []))
+            for s in self.skills:
+                if s.sid in unlocked:
+                    s.unlocked = True
+        except Exception as e:
+            print(f"[Load Error] {e}")
 
     def set_phase(self, p: Phase):
         self.phase = p
@@ -747,7 +787,9 @@ class GameManager(metaclass=_SM):
             self.credits   += m.reward_cr
             self.skill_pts += m.reward_sp
             EventBus.pub("mission_complete", self.active_mid)
+            self.save_game()  # Сохраняем прогресс после завершения миссии
         return done
+
 
 # ════════════════════════════════════════════════════════════════════════════
 #  NETWORK MANAGER — карта и взаимодействие с узлами
@@ -1310,6 +1352,7 @@ class SkillManager(metaclass=_SM):
         gm.skill_pts    -= skill.cost
         if skill.special == "silence_sentinel":
             AIManager().sentinel_silenced = time.time() + 120
+        gm.save_game()  # Сохраняем прогресс после изучения навыка
         return True, f"Навык '{skill.name}' изучен!"
 
 # ════════════════════════════════════════════════════════════════════════════
